@@ -65,7 +65,7 @@ docker compose down
 All benchmark metrics (Execution Accuracy %, Valid SQL %, Raw Valid SQL %, P50/P95 latency, and peak GPU VRAM) are computed dynamically by `eval/evaluate.py` across `base_zero_shot`, `base_3_shot`, and `qlora_finetuned` and published directly to:
 
 - [eval/results/benchmark_summary.md](eval/results/benchmark_summary.md)
-- [eval/results/benchmark_summary.json](eval/results/benchmark_summary.json)
+- `eval/results/benchmark_summary.json` (generated after full T4 GPU run)
 
 ## Verification & Linting
 ```bash
