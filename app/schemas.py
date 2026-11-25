@@ -1,0 +1,37 @@
+"""Strict Pydantic v2 request and response schemas for the NL-to-SQL API."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+class QueryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    question: str = Field(..., min_length=1, max_length=1000)
+    schema_ddl: str | None = Field(default=None, min_length=1, max_length=20000)
+
+    @field_validator("question")
+    @classmethod
+    def _strip_non_empty_question(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("question must not be blank.")
+        return cleaned
+
+
+class QueryResponse(BaseModel):
+    question: str
+    sql: str
+    columns: list[str]
+    rows: list[list[Any]]
+    row_count: int
+    latency_ms: float
+
+
+class HealthResponse(BaseModel):
+    status: str
+    inference_mode: str
+    db_connected: bool
