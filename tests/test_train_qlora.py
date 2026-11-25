@@ -23,6 +23,7 @@ from training.train_qlora import (
     build_bnb_config,
     build_lora_config,
     build_sft_config,
+    cast_bfloat16_for_fp16,
     is_native_bf16_supported,
     load_config,
     load_prompt_completion_splits,
@@ -125,6 +126,41 @@ def test_native_bf16_ignores_emulation(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda including_emulation=True: including_emulation,
     )
     assert is_native_bf16_supported() is False
+
+
+def test_cast_bfloat16_for_fp16_handles_trainable_and_frozen(tmp_path: Path) -> None:
+    cfg = load_config(REPO_ROOT / "training" / "config.yaml")
+    model_dir = _create_tiny_qwen_model(tmp_path / "bf16_qwen")
+    bf16_model = AutoModelForCausalLM.from_pretrained(str(model_dir), dtype=torch.bfloat16)
+    bf16_model.save_pretrained(str(model_dir))
+
+    t4_precision = resolve_precision(cfg, use_cuda=True, bf16_supported=False, dry_run=False)
+    assert t4_precision.compute_dtype == torch.float16
+    loaded = AutoModelForCausalLM.from_pretrained(str(model_dir), dtype=t4_precision.compute_dtype)
+    assert all(p.dtype == torch.float16 for p in loaded.parameters())
+
+    train_path, val_path = _write_tiny_splits(tmp_path / "data")
+    train_ds, val_ds = load_prompt_completion_splits(train_path, val_path)
+    tok = AutoTokenizer.from_pretrained(str(model_dir))
+    cpu_cfg = resolve_precision(cfg, use_cuda=False, bf16_supported=False, dry_run=True)
+    sft_cfg = build_sft_config(cfg["training"], cpu_cfg, tmp_path / "out", smoketest=False, dry_run=True)
+    trainer = SFTTrainer(
+        model=loaded,
+        args=sft_cfg,
+        train_dataset=train_ds,
+        eval_dataset=val_ds,
+        peft_config=build_lora_config(cfg["lora"]),
+        processing_class=tok,
+    )
+    frozen_param = next(p for p in trainer.model.parameters() if not p.requires_grad)
+    trainable_param = next(p for p in trainer.model.parameters() if p.requires_grad)
+    frozen_param.data = frozen_param.data.to(torch.bfloat16)
+    trainable_param.data = trainable_param.data.to(torch.bfloat16)
+
+    cast_bfloat16_for_fp16(trainer.model)
+    assert all(p.dtype != torch.bfloat16 for p in trainer.model.parameters())
+    assert frozen_param.dtype == torch.float16
+    assert trainable_param.dtype == torch.float32
 
 
 def test_bnb_and_lora_configs_match_yaml() -> None:
