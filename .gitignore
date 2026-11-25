@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.env
+*.sqlite*
+data/
+outputs/
+checkpoints/
+*.bin
+*.safetensors
+.vscode/
+.idea/
+AGENTS.md

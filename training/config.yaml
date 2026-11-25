@@ -1,0 +1,54 @@
+model:
+  base_model_id: "Qwen/Qwen2.5-3B-Instruct"
+  trust_remote_code: false
+
+quantization:
+  load_in_4bit: true
+  bnb_4bit_quant_type: "nf4"
+  bnb_4bit_use_double_quant: true
+  bnb_4bit_compute_dtype: "bfloat16"
+  bnb_4bit_compute_dtype_fallback: "float16"
+
+lora:
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  bias: "none"
+  task_type: "CAUSAL_LM"
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+
+training:
+  output_dir: "outputs/qwen2.5-3b-nl2sql-qlora"
+  optim: "paged_adamw_8bit"
+  lr_scheduler_type: "cosine"
+  warmup_ratio: 0.05
+  learning_rate: 2.0e-4
+  num_train_epochs: 3
+  per_device_train_batch_size: 2
+  per_device_eval_batch_size: 2
+  gradient_accumulation_steps: 8
+  max_length: 2048
+  bf16: true
+  fp16_fallback: true
+  completion_only_loss: true
+  logging_steps: 10
+  eval_strategy: "epoch"
+  save_strategy: "epoch"
+  seed: 42
+
+dataset:
+  hf_dataset_id: "xlangai/spider"
+  spider_db_dir: "data/spider/database"
+  output_dir: "data/processed"
+  smoketest_output_dir: "data/smoketest"
+  train_filename: "train.jsonl"
+  val_filename: "val.jsonl"
+  val_ratio: 0.15
+  seed: 42
