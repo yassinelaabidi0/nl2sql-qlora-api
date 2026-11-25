@@ -5,13 +5,13 @@ Production-grade Natural-Language-to-SQL system fine-tuning `Qwen/Qwen2.5-3B-Ins
 ## Architecture
 
 ```mermaid
-flowchart LR
-    Q["User Question"] --> API["FastAPI POST /query (asyncio.to_thread)"]
+flowchart TD
+    Q["User Question"] --> API["FastAPI POST /query<br/>asyncio.to_thread"]
     API --> LLM["Qwen2.5-3B QLoRA / Mock Predictor"]
-    LLM --> Guard["app/guard.py (SQLGlot Postgres AST + LIMIT 100)"]
-    Guard -->|Rejected| Audit["nl2sql_logger: INSERT query_logs (rejected)"]
-    Guard -->|Approved| RO["nl2sql_ro: Read-Only SELECT (3s timeout)"]
-    RO --> AuditOK["nl2sql_logger: INSERT query_logs (success)"]
+    LLM --> Guard["app/guard.py<br/>SQLGlot Postgres AST + LIMIT 100"]
+    Guard -- Rejected --> Audit["nl2sql_logger<br/>INSERT query_logs - rejected"]
+    Guard -- Approved --> RO["nl2sql_ro<br/>Read-Only SELECT - 3s timeout"]
+    RO --> AuditOK["nl2sql_logger<br/>INSERT query_logs - success"]
     RO --> Resp["JSON QueryResponse"]
 ```
 
