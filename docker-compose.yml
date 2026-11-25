@@ -1,0 +1,37 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-nl2sql}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-nl2sql}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      INFERENCE_MODE: ${INFERENCE_MODE:-mock}
+      READONLY_DATABASE_URL: ${READONLY_DATABASE_URL:-postgresql://nl2sql_ro:nl2sql_ro@postgres:5432/nl2sql}
+      LOG_DATABASE_URL: ${LOG_DATABASE_URL:-postgresql://nl2sql_logger:nl2sql_logger@postgres:5432/nl2sql}
+      STATEMENT_TIMEOUT_MS: ${STATEMENT_TIMEOUT_MS:-3000}
+      CONFIG_PATH: ${CONFIG_PATH:-training/config.yaml}
+      ADAPTER_DIR: ${ADAPTER_DIR:-outputs/qwen2.5-3b-nl2sql-qlora}
+    ports:
+      - "8000:8000"
+
+volumes:
+  pg_data:
