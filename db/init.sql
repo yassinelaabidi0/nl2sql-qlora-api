@@ -81,7 +81,7 @@ GRANT SELECT ON TABLE departments, employees, sales TO nl2sql_ro;
 REVOKE ALL ON TABLE query_logs FROM nl2sql_ro;
 ALTER ROLE nl2sql_ro SET statement_timeout = '3000ms';
 
--- Audit logger role: INSERT only on query_logs + sequence usage, zero access to business tables.
+-- Audit logger role: SELECT/INSERT only on query_logs + sequence usage, zero access to business tables.
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM nl2sql_logger;
-GRANT INSERT ON TABLE query_logs TO nl2sql_logger;
+GRANT SELECT, INSERT ON TABLE query_logs TO nl2sql_logger;
 GRANT USAGE, SELECT ON SEQUENCE query_logs_id_seq TO nl2sql_logger;

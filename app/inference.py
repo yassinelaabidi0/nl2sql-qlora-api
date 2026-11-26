@@ -25,9 +25,17 @@ class MockPredictor:
     mode = "mock"
 
     def generate(self, question: str, schema_ddl: str) -> str:
-        match = _TABLE_RE.search(schema_ddl)
-        table = match.group(1).strip('"`[]') if match else "items"
+        tables = [m.strip('"`[]') for m in _TABLE_RE.findall(schema_ddl)]
         q_lower = question.lower()
+        table = next((t for t in tables if t.lower() in q_lower), tables[0] if tables else "items")
+        if "pg_sleep" in q_lower:
+            return "SELECT pg_sleep(10)"
+        if "truncate" in q_lower:
+            return f"TRUNCATE TABLE {table}"
+        if "delete" in q_lower:
+            return f"DELETE FROM {table}"
+        if "drop" in q_lower:
+            return f"DROP TABLE {table}"
         if "count" in q_lower or "how many" in q_lower:
             return f"SELECT COUNT(*) AS total_count FROM {table}"
         return f"SELECT * FROM {table}"

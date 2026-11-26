@@ -1,17 +1,25 @@
-"""FastAPI microservice exposing /health and hardened /query NL-to-SQL endpoints."""
+"""FastAPI microservice exposing /health, /schema, /history, and hardened /query endpoints."""
 
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.db import AsyncPostgresClient, DatabaseProtocol
 from app.guard import SQLGuardError, validate_and_normalize_sql
 from app.inference import PredictorProtocol, create_predictor
-from app.schemas import HealthResponse, QueryRequest, QueryResponse
+from app.schemas import (
+    HealthResponse,
+    HistoryResponse,
+    QueryRequest,
+    QueryResponse,
+    SchemaResponse,
+)
 
 
 def create_app(
@@ -37,6 +45,16 @@ def create_app(
 
     fastapi_app = FastAPI(title="NL-to-SQL Hardened Microservice", version="0.1.0", lifespan=lifespan)
 
+    raw_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:5173")
+    origins = [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
+    fastapi_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
     @fastapi_app.get("/health", response_model=HealthResponse)
     async def health(request: Request) -> HealthResponse:
         active_db: DatabaseProtocol = request.app.state.db
@@ -47,6 +65,21 @@ def create_app(
             inference_mode=active_pred.mode,
             db_connected=db_ok,
         )
+
+    @fastapi_app.get("/schema", response_model=SchemaResponse)
+    async def schema(request: Request) -> SchemaResponse:
+        active_db: DatabaseProtocol = request.app.state.db
+        tables = await active_db.fetch_schema_details()
+        return SchemaResponse(tables=tables)
+
+    @fastapi_app.get("/history", response_model=HistoryResponse)
+    async def history(
+        request: Request,
+        limit: int = Query(default=25, ge=1, le=200),
+    ) -> HistoryResponse:
+        active_db: DatabaseProtocol = request.app.state.db
+        items = await active_db.fetch_history(limit=limit)
+        return HistoryResponse(items=items)
 
     @fastapi_app.post("/query", response_model=QueryResponse)
     async def query(payload: QueryRequest, request: Request) -> QueryResponse:

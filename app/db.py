@@ -38,6 +38,8 @@ class DatabaseProtocol(Protocol):
     async def close(self) -> None: ...
     async def ping(self) -> bool: ...
     async def fetch_schema_ddl(self) -> str: ...
+    async def fetch_schema_details(self) -> list[dict[str, Any]]: ...
+    async def fetch_history(self, limit: int = 25) -> list[dict[str, Any]]: ...
     async def execute_readonly(self, sql: str) -> tuple[list[str], list[list[Any]]]: ...
     async def log_query(
         self,
@@ -94,23 +96,58 @@ class AsyncPostgresClient:
         except (asyncpg.PostgresError, OSError):
             return False
 
-    async def fetch_schema_ddl(self) -> str:
+    async def fetch_schema_details(self) -> list[dict[str, Any]]:
         if self._ro_pool is None:
             raise RuntimeError("Database pool is not initialized.")
         query = (
-            "SELECT table_name, column_name, data_type "
+            "SELECT table_name, column_name, data_type, is_nullable "
             "FROM information_schema.columns "
             "WHERE table_schema = 'public' AND table_name <> 'query_logs' "
             "ORDER BY table_name, ordinal_position"
         )
         async with self._ro_pool.acquire() as conn:
             rows = await conn.fetch(query)
-        tables: dict[str, list[str]] = {}
+        tables: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
-            tables.setdefault(str(row["table_name"]), []).append(f"{row['column_name']} {row['data_type']}")
-        if not tables:
+            tables.setdefault(str(row["table_name"]), []).append(
+                {
+                    "name": str(row["column_name"]),
+                    "data_type": str(row["data_type"]),
+                    "is_nullable": str(row["is_nullable"]).upper() == "YES",
+                }
+            )
+        return [{"name": tbl, "columns": cols} for tbl, cols in tables.items()]
+
+    async def fetch_schema_ddl(self) -> str:
+        details = await self.fetch_schema_details()
+        if not details:
             raise RuntimeError("No queryable tables found in public schema.")
-        return "\n".join(f"CREATE TABLE {tbl} ({', '.join(cols)});" for tbl, cols in tables.items())
+        return "\n".join(
+            f"CREATE TABLE {tbl['name']} ({', '.join(f'{c['name']} {c['data_type']}' for c in tbl['columns'])});"
+            for tbl in details
+        )
+
+    async def fetch_history(self, limit: int = 25) -> list[dict[str, Any]]:
+        if self._log_pool is None:
+            raise RuntimeError("Log database pool is not initialized.")
+        query = (
+            "SELECT id, created_at, question, generated_sql, status, latency_ms, error_message "
+            "FROM query_logs ORDER BY id DESC LIMIT $1"
+        )
+        async with self._log_pool.acquire() as conn:
+            rows = await conn.fetch(query, limit)
+        return [
+            {
+                "id": int(row["id"]),
+                "created_at": str(_to_json_safe(row["created_at"])),
+                "question": str(row["question"]),
+                "generated_sql": str(row["generated_sql"]),
+                "status": str(row["status"]),
+                "latency_ms": float(row["latency_ms"]),
+                "error_message": str(row["error_message"]) if row["error_message"] is not None else None,
+            }
+            for row in rows
+        ]
 
     async def execute_readonly(self, sql: str) -> tuple[list[str], list[list[Any]]]:
         if self._ro_pool is None:

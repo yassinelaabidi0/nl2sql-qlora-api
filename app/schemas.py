@@ -35,3 +35,32 @@ class HealthResponse(BaseModel):
     status: str
     inference_mode: str
     db_connected: bool
+
+
+class ColumnInfo(BaseModel):
+    name: str
+    data_type: str
+    is_nullable: bool
+
+
+class TableSchema(BaseModel):
+    name: str
+    columns: list[ColumnInfo]
+
+
+class SchemaResponse(BaseModel):
+    tables: list[TableSchema]
+
+
+class HistoryEntry(BaseModel):
+    id: int
+    created_at: str
+    question: str
+    generated_sql: str
+    status: str
+    latency_ms: float
+    error_message: str | None = None
+
+
+class HistoryResponse(BaseModel):
+    items: list[HistoryEntry]
