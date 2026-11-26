@@ -1,0 +1,41 @@
+{
+  "mode": "spider",
+  "mock_inference": false,
+  "num_examples": 1034,
+  "timeout_sec": 3.0,
+  "results": [
+    {
+      "mode": "base_zero_shot",
+      "total_examples": 1034,
+      "execution_accuracy_pct": 53.68,
+      "valid_sql_rate_pct": 83.17,
+      "raw_valid_sql_rate_pct": 83.17,
+      "fenced_outputs": 0,
+      "latency_p50_ms": 2774.77,
+      "latency_p95_ms": 5386.83,
+      "peak_vram_mb": 2172.88
+    },
+    {
+      "mode": "base_3_shot",
+      "total_examples": 1034,
+      "execution_accuracy_pct": 51.06,
+      "valid_sql_rate_pct": 81.82,
+      "raw_valid_sql_rate_pct": 81.82,
+      "fenced_outputs": 0,
+      "latency_p50_ms": 3687.51,
+      "latency_p95_ms": 6538.0,
+      "peak_vram_mb": 2684.8
+    },
+    {
+      "mode": "qlora_finetuned",
+      "total_examples": 1034,
+      "execution_accuracy_pct": 70.12,
+      "valid_sql_rate_pct": 91.1,
+      "raw_valid_sql_rate_pct": 91.1,
+      "fenced_outputs": 0,
+      "latency_p50_ms": 3187.21,
+      "latency_p95_ms": 9793.53,
+      "peak_vram_mb": 2285.94
+    }
+  ]
+}

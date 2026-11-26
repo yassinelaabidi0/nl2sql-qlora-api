@@ -1,0 +1,11 @@
+{
+  "mode": "train",
+  "model_id": "Qwen/Qwen2.5-3B-Instruct",
+  "precision": "float16",
+  "quantized_4bit": true,
+  "completion_only_loss": true,
+  "global_step": 1314,
+  "train_loss": 0.10331352102702067,
+  "eval_loss": 0.37822282314300537,
+  "peak_vram_mb": 5221.55
+}

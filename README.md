@@ -62,10 +62,32 @@ docker compose down
 
 ## Benchmarks
 
-All benchmark metrics (Execution Accuracy %, Valid SQL %, Raw Valid SQL %, P50/P95 latency, and peak GPU VRAM) are computed dynamically by `eval/evaluate.py` across `base_zero_shot`, `base_3_shot`, and `qlora_finetuned` and published directly to:
+Evaluated on the full held-out Spider validation set (**1,034 examples across 20 unseen schemas**) using a Kaggle Tesla T4 GPU (`15 GB` VRAM, greedy decoding `do_sample=False`, `3.0s` read-only SQLite execution timeout).
 
+### 3-Way Evaluation Results
+
+| Mode | EX (%) | Valid SQL (%) | Raw Valid SQL (%) | P50 Latency (ms) | P95 Latency (ms) | Peak VRAM (MB) |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `base_zero_shot` | 53.68 | 83.17 | 83.17 | 2774.77 | 5386.83 | 2172.88 |
+| `base_3_shot` | 51.06 | 81.82 | 81.82 | 3687.51 | 6538.00 | 2684.80 |
+| `qlora_finetuned` | **70.12** | **91.10** | **91.10** | 3187.21 | 9793.53 | 2285.94 |
+
+### QLoRA Training Summary (Kaggle T4, `float16` + 4-bit NF4)
+
+- **Steps:** `1,314` (`completion_only_loss=true`)
+- **Train Loss:** `0.1033` (`0.10331352102702067`) | **Eval Loss:** `0.3782` (`0.37822282314300537`)
+- **Training Peak VRAM:** `5,221.55 MB`
+
+### Key Takeaways
+
+- **+16.44 pp Execution Accuracy** over zero-shot (`53.68%` → `70.12%`) and **+19.06 pp** over 3-shot (`51.06%` → `70.12%`) on 20 unseen Spider schemas (`1,034` val examples).
+- **+7.93 pp Valid SQL** improvement (`83.17%` → `91.10%`) with zero post-processing gap (`Raw Valid SQL% == Valid SQL%`).
+- **Why QLoRA beats 3-shot prompting on a 3B model:** 3-shot drops EX accuracy (`-2.62 pp` vs. zero-shot) while increasing P50 latency (`+913 ms`, `2774.77 ms` → `3687.51 ms`) and Peak VRAM (`+512 MB`, `2172.88 MB` → `2684.80 MB`) from longer KV-cache context.
+
+Full machine-readable outputs:
 - [eval/results/benchmark_summary.md](eval/results/benchmark_summary.md)
-- `eval/results/benchmark_summary.json` (generated after full T4 GPU run)
+- [eval/results/benchmark_summary.json](eval/results/benchmark_summary.json)
+- [eval/results/training_summary.json](eval/results/training_summary.json)
 
 ## Verification & Linting
 ```bash
