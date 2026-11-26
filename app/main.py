@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import time
+from collections.abc import Sequence
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.db import AsyncPostgresClient, DatabaseProtocol
 from app.guard import SQLGuardError, validate_and_normalize_sql
 from app.inference import PredictorProtocol, create_predictor
+from app.schema_linker import find_column_owners, format_schema_ddl, link_schema
 from app.schemas import (
     HealthResponse,
     HistoryResponse,
@@ -21,12 +25,37 @@ from app.schemas import (
     SchemaResponse,
 )
 
+_MISSING_ALIAS_COL_RE = re.compile(
+    r'column\s+"?([A-Za-z_][A-Za-z0-9_]*)"?\."?([A-Za-z_][A-Za-z0-9_]*)"?\s+does not exist',
+    re.IGNORECASE,
+)
+
 
 def _resolve_max_sql_retries(override: int | None = None) -> int:
     if override is not None:
         return max(0, override)
-    raw = os.getenv("MAX_SQL_RETRIES", "1").strip()
+    raw = os.getenv("MAX_SQL_RETRIES", "2").strip()
     return max(0, int(raw))
+
+
+def _enrich_repair_error(
+    error_message: str,
+    linked_tables: Sequence[dict[str, Any]],
+    all_tables: Sequence[dict[str, Any]],
+) -> str:
+    match = _MISSING_ALIAS_COL_RE.search(error_message)
+    if not match:
+        return error_message
+    alias, col = match.group(1), match.group(2)
+    owners = find_column_owners(col, linked_tables) or find_column_owners(col, all_tables)
+    if not owners:
+        return error_message
+    owner_list = ", ".join(owners)
+    return (
+        f"{error_message}\n"
+        f"Schema hint: Column '{col}' belongs to table(s): {owner_list}. "
+        f"Join the owning table via its declared foreign key instead of referencing {alias}.{col}."
+    )
 
 
 def create_app(
@@ -106,7 +135,22 @@ def create_app(
                     detail={"error": "SQL guard rejected query", "reason": str(exc)},
                 ) from exc
 
-        schema_ddl = payload.schema_ddl or await active_db.fetch_schema_ddl()
+        all_tables: list[dict[str, Any]] = []
+        pruned_tables: list[dict[str, Any]] = []
+        if payload.schema_ddl:
+            schema_ddl = payload.schema_ddl
+            linked_tables: list[str] = []
+        else:
+            all_tables, all_fks = await asyncio.gather(
+                active_db.fetch_schema_details(),
+                active_db.fetch_foreign_keys(),
+            )
+            if not all_tables:
+                raise RuntimeError("No queryable tables found in public schema.")
+            pruned_tables, pruned_fks = link_schema(payload.question, all_tables, all_fks)
+            schema_ddl = format_schema_ddl(pruned_tables, pruned_fks)
+            linked_tables = [str(tbl["name"]) for tbl in pruned_tables]
+
         raw_sql = await asyncio.to_thread(active_pred.generate, payload.question, schema_ddl)
         safe_sql = await validate_or_abort(raw_sql)
 
@@ -131,12 +175,13 @@ def create_app(
                     ) from exc
 
                 repair_attempts += 1
+                repair_error = _enrich_repair_error(str(exc), pruned_tables, all_tables)
                 repaired_raw_sql = await asyncio.to_thread(
                     active_pred.repair,
                     payload.question,
                     schema_ddl,
                     safe_sql,
-                    str(exc),
+                    repair_error,
                 )
                 safe_sql = await validate_or_abort(repaired_raw_sql)
 
@@ -151,6 +196,7 @@ def create_app(
             latency_ms=latency_ms,
             was_repaired=repair_attempts > 0,
             repair_attempts=repair_attempts,
+            linked_tables=linked_tables,
         )
 
     return fastapi_app

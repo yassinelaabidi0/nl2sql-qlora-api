@@ -12,10 +12,15 @@ import yaml
 _TABLE_RE = re.compile(r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([\"`\[]?\w+[\"`\]]?)", re.IGNORECASE)
 
 REPAIR_SYSTEM_PROMPT = (
-    "You are a PostgreSQL SQL expert. Fix the failed SQL query using the provided schema DDL, "
-    "user question, and exact PostgreSQL error message (such as strict GROUP BY, column aliases, "
-    "or type casts). Return only a single valid PostgreSQL SELECT statement with no markdown "
-    "backticks or explanation."
+    "You are a PostgreSQL SQL expert fixing a failed SQL query. Verify table alias declaration order "
+    "(FROM/JOIN order) and exact column ownership against the schema, then return only a single valid "
+    "PostgreSQL SELECT statement that fixes the error with no markdown backticks or explanation.\n\n"
+    "PostgreSQL rules:\n"
+    "1. Use ONLY tables and columns explicitly defined in the provided schema.\n"
+    "2. Follow declared FOREIGN KEY relationships for all JOINs; never invent joins between unrelated IDs.\n"
+    "3. Enforce strict PostgreSQL GROUP BY: every non-aggregated expression in SELECT must appear in GROUP BY.\n"
+    "4. Compute date/timestamp differences in days with EXTRACT(EPOCH FROM (end_ts - start_ts)) / 86400.0 (never julianday).\n"
+    "5. When combining multiple one-to-many tables in aggregations (e.g., order_items and reviews), pre-aggregate in CTEs (WITH ...)."
 )
 
 
@@ -103,7 +108,7 @@ class QLoRAPredictor:
             f"Question:\n{question.strip()}\n\n"
             f"Failed SQL:\n{failed_sql.strip()}\n\n"
             f"PostgreSQL Error:\n{error_message.strip()}\n\n"
-            "Return only a single valid PostgreSQL SELECT statement fixing the error:"
+            "Verify alias declaration order (FROM/JOIN) and column ownership, then return only a single valid PostgreSQL SELECT statement:"
         )
         return self._infer_cleaned_sql(REPAIR_SYSTEM_PROMPT, user_content)
 

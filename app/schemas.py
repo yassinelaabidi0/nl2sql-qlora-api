@@ -31,6 +31,7 @@ class QueryResponse(BaseModel):
     latency_ms: float
     was_repaired: bool = False
     repair_attempts: int = 0
+    linked_tables: list[str] = Field(default_factory=list)
 
 
 class HealthResponse(BaseModel):

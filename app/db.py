@@ -10,6 +10,8 @@ from typing import Any, Protocol
 
 import asyncpg
 
+from app.schema_linker import format_schema_ddl
+
 _QUERY_LOGS_DDL = """
 CREATE TABLE IF NOT EXISTS query_logs (
     id BIGSERIAL PRIMARY KEY,
@@ -39,6 +41,7 @@ class DatabaseProtocol(Protocol):
     async def ping(self) -> bool: ...
     async def fetch_schema_ddl(self) -> str: ...
     async def fetch_schema_details(self) -> list[dict[str, Any]]: ...
+    async def fetch_foreign_keys(self) -> list[dict[str, str]]: ...
     async def fetch_history(self, limit: int = 25) -> list[dict[str, Any]]: ...
     async def execute_readonly(self, sql: str) -> tuple[list[str], list[list[Any]]]: ...
     async def log_query(
@@ -99,33 +102,86 @@ class AsyncPostgresClient:
     async def fetch_schema_details(self) -> list[dict[str, Any]]:
         if self._ro_pool is None:
             raise RuntimeError("Database pool is not initialized.")
-        query = (
+        col_query = (
             "SELECT table_name, column_name, data_type, is_nullable "
             "FROM information_schema.columns "
             "WHERE table_schema = 'public' AND table_name <> 'query_logs' "
             "ORDER BY table_name, ordinal_position"
         )
+        pk_query = (
+            "SELECT rel.relname AS table_name, a.attname AS column_name "
+            "FROM pg_catalog.pg_constraint AS con "
+            "JOIN pg_catalog.pg_class AS rel ON rel.oid = con.conrelid "
+            "JOIN pg_catalog.pg_namespace AS nsp ON nsp.oid = rel.relnamespace "
+            "CROSS JOIN LATERAL UNNEST(con.conkey) WITH ORDINALITY AS k(attnum, ord) "
+            "JOIN pg_catalog.pg_attribute AS a ON a.attrelid = con.conrelid AND a.attnum = k.attnum "
+            "WHERE con.contype = 'p' "
+            "AND nsp.nspname = 'public' "
+            "AND rel.relname <> 'query_logs' "
+            "AND has_table_privilege(rel.oid, 'SELECT')"
+        )
         async with self._ro_pool.acquire() as conn:
-            rows = await conn.fetch(query)
+            rows = await conn.fetch(col_query)
+            pk_rows = await conn.fetch(pk_query)
+
+        pk_columns = {(str(r["table_name"]), str(r["column_name"])) for r in pk_rows}
         tables: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
-            tables.setdefault(str(row["table_name"]), []).append(
+            tbl = str(row["table_name"])
+            col = str(row["column_name"])
+            tables.setdefault(tbl, []).append(
                 {
-                    "name": str(row["column_name"]),
+                    "name": col,
                     "data_type": str(row["data_type"]),
                     "is_nullable": str(row["is_nullable"]).upper() == "YES",
+                    "is_primary_key": (tbl, col) in pk_columns,
                 }
             )
         return [{"name": tbl, "columns": cols} for tbl, cols in tables.items()]
+
+    async def fetch_foreign_keys(self) -> list[dict[str, str]]:
+        """Query PostgreSQL foreign keys via pg_constraint (works under SELECT-only roles)."""
+        if self._ro_pool is None:
+            raise RuntimeError("Database pool is not initialized.")
+        query = (
+            "SELECT rel.relname AS table_name, "
+            "       a.attname AS column_name, "
+            "       ref.relname AS ref_table, "
+            "       af.attname AS ref_column "
+            "FROM pg_catalog.pg_constraint AS con "
+            "JOIN pg_catalog.pg_class AS rel ON rel.oid = con.conrelid "
+            "JOIN pg_catalog.pg_class AS ref ON ref.oid = con.confrelid "
+            "JOIN pg_catalog.pg_namespace AS nsp ON nsp.oid = rel.relnamespace "
+            "CROSS JOIN LATERAL UNNEST(con.conkey) WITH ORDINALITY AS k(attnum, ord) "
+            "JOIN LATERAL UNNEST(con.confkey) WITH ORDINALITY AS fk(attnum, ord) ON fk.ord = k.ord "
+            "JOIN pg_catalog.pg_attribute AS a ON a.attrelid = con.conrelid AND a.attnum = k.attnum "
+            "JOIN pg_catalog.pg_attribute AS af ON af.attrelid = con.confrelid AND af.attnum = fk.attnum "
+            "WHERE con.contype = 'f' "
+            "AND nsp.nspname = 'public' "
+            "AND rel.relname <> 'query_logs' "
+            "AND ref.relname <> 'query_logs' "
+            "AND has_table_privilege(rel.oid, 'SELECT') "
+            "AND has_table_privilege(ref.oid, 'SELECT') "
+            "ORDER BY rel.relname, con.conname, k.ord"
+        )
+        async with self._ro_pool.acquire() as conn:
+            rows = await conn.fetch(query)
+        return [
+            {
+                "table": str(row["table_name"]),
+                "column": str(row["column_name"]),
+                "ref_table": str(row["ref_table"]),
+                "ref_column": str(row["ref_column"]),
+            }
+            for row in rows
+        ]
 
     async def fetch_schema_ddl(self) -> str:
         details = await self.fetch_schema_details()
         if not details:
             raise RuntimeError("No queryable tables found in public schema.")
-        return "\n".join(
-            f"CREATE TABLE {tbl['name']} ({', '.join(f'{c['name']} {c['data_type']}' for c in tbl['columns'])});"
-            for tbl in details
-        )
+        foreign_keys = await self.fetch_foreign_keys()
+        return format_schema_ddl(details, foreign_keys)
 
     async def fetch_history(self, limit: int = 25) -> list[dict[str, Any]]:
         if self._log_pool is None:
