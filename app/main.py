@@ -22,9 +22,17 @@ from app.schemas import (
 )
 
 
+def _resolve_max_sql_retries(override: int | None = None) -> int:
+    if override is not None:
+        return max(0, override)
+    raw = os.getenv("MAX_SQL_RETRIES", "1").strip()
+    return max(0, int(raw))
+
+
 def create_app(
     db: DatabaseProtocol | None = None,
     predictor: PredictorProtocol | None = None,
+    max_sql_retries: int | None = None,
 ) -> FastAPI:
     """Build FastAPI app with optional injected DB/predictor for isolated tests."""
 
@@ -87,28 +95,50 @@ def create_app(
         active_pred: PredictorProtocol = request.app.state.predictor
         t0 = time.perf_counter()
 
+        async def validate_or_abort(candidate_sql: str) -> str:
+            try:
+                return validate_and_normalize_sql(candidate_sql)
+            except SQLGuardError as exc:
+                latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+                await active_db.log_query(payload.question, candidate_sql, "rejected", latency_ms, str(exc))
+                raise HTTPException(
+                    status_code=400,
+                    detail={"error": "SQL guard rejected query", "reason": str(exc)},
+                ) from exc
+
         schema_ddl = payload.schema_ddl or await active_db.fetch_schema_ddl()
         raw_sql = await asyncio.to_thread(active_pred.generate, payload.question, schema_ddl)
+        safe_sql = await validate_or_abort(raw_sql)
 
-        try:
-            safe_sql = validate_and_normalize_sql(raw_sql)
-        except SQLGuardError as exc:
-            latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
-            await active_db.log_query(payload.question, raw_sql, "rejected", latency_ms, str(exc))
-            raise HTTPException(
-                status_code=400,
-                detail={"error": "SQL guard rejected query", "reason": str(exc)},
-            ) from exc
+        eff_retries = _resolve_max_sql_retries(max_sql_retries)
+        repair_attempts = 0
 
-        try:
-            columns, rows = await active_db.execute_readonly(safe_sql)
-        except Exception as exc:
-            latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
-            await active_db.log_query(payload.question, safe_sql, "error", latency_ms, str(exc))
-            raise HTTPException(
-                status_code=500,
-                detail={"error": "Database execution failed", "reason": str(exc)},
-            ) from exc
+        while True:
+            try:
+                columns, rows = await active_db.execute_readonly(safe_sql)
+                break
+            except Exception as exc:
+                if repair_attempts >= eff_retries:
+                    latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+                    await active_db.log_query(payload.question, safe_sql, "error", latency_ms, str(exc))
+                    raise HTTPException(
+                        status_code=500,
+                        detail={
+                            "error": "Database execution failed",
+                            "reason": str(exc),
+                            "generated_sql": safe_sql,
+                        },
+                    ) from exc
+
+                repair_attempts += 1
+                repaired_raw_sql = await asyncio.to_thread(
+                    active_pred.repair,
+                    payload.question,
+                    schema_ddl,
+                    safe_sql,
+                    str(exc),
+                )
+                safe_sql = await validate_or_abort(repaired_raw_sql)
 
         latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
         await active_db.log_query(payload.question, safe_sql, "success", latency_ms, None)
@@ -119,6 +149,8 @@ def create_app(
             rows=rows,
             row_count=len(rows),
             latency_ms=latency_ms,
+            was_repaired=repair_attempts > 0,
+            repair_attempts=repair_attempts,
         )
 
     return fastapi_app

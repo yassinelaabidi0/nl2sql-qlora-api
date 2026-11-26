@@ -11,12 +11,28 @@ import yaml
 
 _TABLE_RE = re.compile(r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([\"`\[]?\w+[\"`\]]?)", re.IGNORECASE)
 
+REPAIR_SYSTEM_PROMPT = (
+    "You are a PostgreSQL SQL expert. Fix the failed SQL query using the provided schema DDL, "
+    "user question, and exact PostgreSQL error message (such as strict GROUP BY, column aliases, "
+    "or type casts). Return only a single valid PostgreSQL SELECT statement with no markdown "
+    "backticks or explanation."
+)
+
 
 class PredictorProtocol(Protocol):
     mode: str
 
     def generate(self, question: str, schema_ddl: str) -> str:
         """Generate a candidate SQL query for a question and schema DDL."""
+
+    def repair(self, question: str, schema_ddl: str, failed_sql: str, error_message: str) -> str:
+        """Repair a failed SQL query using the PostgreSQL execution error message."""
+
+
+def _resolve_target_table(question: str, schema_ddl: str) -> str:
+    tables = [m.strip('"`[]') for m in _TABLE_RE.findall(schema_ddl)]
+    q_lower = question.lower()
+    return next((t for t in tables if t.lower() in q_lower), tables[0] if tables else "items")
 
 
 class MockPredictor:
@@ -25,9 +41,8 @@ class MockPredictor:
     mode = "mock"
 
     def generate(self, question: str, schema_ddl: str) -> str:
-        tables = [m.strip('"`[]') for m in _TABLE_RE.findall(schema_ddl)]
+        table = _resolve_target_table(question, schema_ddl)
         q_lower = question.lower()
-        table = next((t for t in tables if t.lower() in q_lower), tables[0] if tables else "items")
         if "pg_sleep" in q_lower:
             return "SELECT pg_sleep(10)"
         if "truncate" in q_lower:
@@ -37,6 +52,13 @@ class MockPredictor:
         if "drop" in q_lower:
             return f"DROP TABLE {table}"
         if "count" in q_lower or "how many" in q_lower:
+            return f"SELECT COUNT(*) AS total_count FROM {table}"
+        return f"SELECT * FROM {table}"
+
+    def repair(self, question: str, schema_ddl: str, failed_sql: str, error_message: str) -> str:
+        del error_message
+        table = _resolve_target_table(question, schema_ddl)
+        if "count" in failed_sql.lower() or "count" in question.lower() or "how many" in question.lower():
             return f"SELECT COUNT(*) AS total_count FROM {table}"
         return f"SELECT * FROM {table}"
 
@@ -55,18 +77,35 @@ class QLoRAPredictor:
             raise FileNotFoundError(f"QLoRA adapter directory not found: {eff_adapter}")
         self._model, self._tokenizer = load_hf_model_and_tokenizer(cfg, eff_adapter)
 
-    def generate(self, question: str, schema_ddl: str) -> str:
+    def _infer_cleaned_sql(self, system_prompt: str, user_content: str) -> str:
         from eval.evaluate import generate_sql_greedy
         from eval.sqlite_exec import strip_markdown_sql
-        from training.prepare_dataset import SYSTEM_PROMPT
 
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": f"Schema:\n{schema_ddl}\n\nQuestion:\n{question.strip()}"},
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
         ]
         raw_sql, _ = generate_sql_greedy(self._model, self._tokenizer, messages)
         cleaned_sql, _ = strip_markdown_sql(raw_sql)
         return cleaned_sql
+
+    def generate(self, question: str, schema_ddl: str) -> str:
+        from training.prepare_dataset import SYSTEM_PROMPT
+
+        return self._infer_cleaned_sql(
+            SYSTEM_PROMPT,
+            f"Schema:\n{schema_ddl}\n\nQuestion:\n{question.strip()}",
+        )
+
+    def repair(self, question: str, schema_ddl: str, failed_sql: str, error_message: str) -> str:
+        user_content = (
+            f"Schema:\n{schema_ddl}\n\n"
+            f"Question:\n{question.strip()}\n\n"
+            f"Failed SQL:\n{failed_sql.strip()}\n\n"
+            f"PostgreSQL Error:\n{error_message.strip()}\n\n"
+            "Return only a single valid PostgreSQL SELECT statement fixing the error:"
+        )
+        return self._infer_cleaned_sql(REPAIR_SYSTEM_PROMPT, user_content)
 
 
 def create_predictor(

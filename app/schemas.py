@@ -29,6 +29,8 @@ class QueryResponse(BaseModel):
     rows: list[list[Any]]
     row_count: int
     latency_ms: float
+    was_repaired: bool = False
+    repair_attempts: int = 0
 
 
 class HealthResponse(BaseModel):

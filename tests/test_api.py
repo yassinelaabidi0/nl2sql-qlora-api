@@ -15,6 +15,7 @@ from app.main import create_app
 class FakeDB:
     healthy: bool = True
     executed_sql: list[str] = field(default_factory=list)
+    execute_errors: list[Exception] = field(default_factory=list)
     logs: list[dict[str, Any]] = field(default_factory=list)
     schema_ddl: str = "CREATE TABLE orders (id integer, customer text, amount double precision);"
     schema_details: list[dict[str, Any]] = field(
@@ -50,6 +51,8 @@ class FakeDB:
 
     async def execute_readonly(self, sql: str) -> tuple[list[str], list[list[Any]]]:
         self.executed_sql.append(sql)
+        if self.execute_errors:
+            raise self.execute_errors.pop(0)
         return ["total_count"], [[42]]
 
     async def log_query(
@@ -73,14 +76,21 @@ class FakeDB:
         )
 
 
-class UnsafeStubPredictor:
+class StubPredictor:
     mode = "mock"
 
-    def __init__(self, bad_sql: str) -> None:
-        self._bad_sql = bad_sql
+    def __init__(self, initial_sql: str, repaired_sql: str = "SELECT * FROM orders") -> None:
+        self._initial_sql = initial_sql
+        self._repaired_sql = repaired_sql
+        self.repair_calls: list[tuple[str, str, str, str]] = []
 
     def generate(self, question: str, schema_ddl: str) -> str:
-        return self._bad_sql
+        del question, schema_ddl
+        return self._initial_sql
+
+    def repair(self, question: str, schema_ddl: str, failed_sql: str, error_message: str) -> str:
+        self.repair_calls.append((question, schema_ddl, failed_sql, error_message))
+        return self._repaired_sql
 
 
 def test_health_endpoint_and_cors() -> None:
@@ -120,6 +130,8 @@ def test_query_and_history_endpoints_end_to_end(monkeypatch) -> None:
     assert body["rows"] == [[42]]
     assert body["row_count"] == 1
     assert body["latency_ms"] >= 0.0
+    assert body["was_repaired"] is False
+    assert body["repair_attempts"] == 0
     assert db.executed_sql == ["SELECT COUNT(*) AS total_count FROM orders LIMIT 100"]
 
     assert hist.status_code == 200
@@ -140,7 +152,8 @@ def test_history_endpoint_validates_limit() -> None:
 def test_query_endpoint_blocks_guard_violation_and_logs_rejection() -> None:
     db = FakeDB()
     bad_sql = "WITH d AS (DELETE FROM orders RETURNING *) SELECT * FROM d"
-    app = create_app(db=db, predictor=UnsafeStubPredictor(bad_sql))
+    predictor = StubPredictor(bad_sql)
+    app = create_app(db=db, predictor=predictor)
     with TestClient(app) as client:
         resp = client.post(
             "/query",
@@ -149,10 +162,81 @@ def test_query_endpoint_blocks_guard_violation_and_logs_rejection() -> None:
 
     assert resp.status_code == 400
     assert "SQL guard rejected query" in resp.json()["detail"]["error"]
+    assert predictor.repair_calls == []
     assert db.executed_sql == []
     assert len(db.logs) == 1
     assert db.logs[0]["status"] == "rejected"
     assert db.logs[0]["error_message"] is not None
+
+
+def test_query_self_corrects_after_postgres_error() -> None:
+    db = FakeDB(execute_errors=[RuntimeError('column "orders.customer" must appear in the GROUP BY clause')])
+    predictor = StubPredictor(
+        initial_sql="SELECT customer, COUNT(*) FROM orders",
+        repaired_sql="SELECT customer, COUNT(*) AS order_count FROM orders GROUP BY customer",
+    )
+    app = create_app(db=db, predictor=predictor)
+    with TestClient(app) as client:
+        resp = client.post("/query", json={"question": "Count orders per customer"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["was_repaired"] is True
+    assert body["repair_attempts"] == 1
+    assert body["sql"] == "SELECT customer, COUNT(*) AS order_count FROM orders GROUP BY customer LIMIT 100"
+    assert len(predictor.repair_calls) == 1
+    assert "GROUP BY clause" in predictor.repair_calls[0][3]
+    assert db.executed_sql == [
+        "SELECT customer, COUNT(*) FROM orders LIMIT 100",
+        "SELECT customer, COUNT(*) AS order_count FROM orders GROUP BY customer LIMIT 100",
+    ]
+    assert len(db.logs) == 1
+    assert db.logs[0]["status"] == "success"
+    assert db.logs[0]["generated_sql"] == body["sql"]
+
+
+def test_query_blocks_unsafe_repaired_sql_with_400() -> None:
+    db = FakeDB(execute_errors=[RuntimeError('column "missing_col" does not exist')])
+    predictor = StubPredictor(
+        initial_sql="SELECT missing_col FROM orders",
+        repaired_sql="DROP TABLE orders",
+    )
+    app = create_app(db=db, predictor=predictor)
+    with TestClient(app) as client:
+        resp = client.post("/query", json={"question": "List orders"})
+
+    assert resp.status_code == 400
+    assert "SQL guard rejected query" in resp.json()["detail"]["error"]
+    assert len(predictor.repair_calls) == 1
+    assert db.executed_sql == ["SELECT missing_col FROM orders LIMIT 100"]
+    assert len(db.logs) == 1
+    assert db.logs[0]["status"] == "rejected"
+
+
+def test_query_returns_500_with_generated_sql_when_retry_fails() -> None:
+    db = FakeDB(
+        execute_errors=[
+            RuntimeError('column "bad_col_1" does not exist'),
+            RuntimeError('column "bad_col_2" does not exist'),
+        ]
+    )
+    predictor = StubPredictor(
+        initial_sql="SELECT bad_col_1 FROM orders",
+        repaired_sql="SELECT bad_col_2 FROM orders",
+    )
+    app = create_app(db=db, predictor=predictor)
+    with TestClient(app) as client:
+        resp = client.post("/query", json={"question": "List orders"})
+
+    assert resp.status_code == 500
+    detail = resp.json()["detail"]
+    assert detail["error"] == "Database execution failed"
+    assert 'column "bad_col_2" does not exist' in detail["reason"]
+    assert detail["generated_sql"] == "SELECT bad_col_2 FROM orders LIMIT 100"
+    assert len(predictor.repair_calls) == 1
+    assert len(db.logs) == 1
+    assert db.logs[0]["status"] == "error"
+    assert db.logs[0]["generated_sql"] == "SELECT bad_col_2 FROM orders LIMIT 100"
 
 
 def test_mock_predictor_destructive_prompt_triggers_guard() -> None:
