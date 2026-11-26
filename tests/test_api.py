@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.inference import QLoRAPredictor, create_predictor
@@ -411,3 +413,30 @@ def test_query_enriches_missing_column_error_with_owner_hint() -> None:
     assert "column o.country does not exist" in repair_err
     assert "Schema hint: Column 'country' belongs to table(s): suppliers." in repair_err
     assert "Join the owning table via its declared foreign key instead of referencing o.country." in repair_err
+
+
+def test_qlora_predictor_accepts_hf_repo_id_and_local_dir(monkeypatch, tmp_path: Path) -> None:
+    captured_adapters: list[Any] = []
+
+    def fake_loader(_cfg: Any, adapter_dir: str | Path | None = None) -> tuple[None, None]:
+        captured_adapters.append(adapter_dir)
+        return None, None
+
+    monkeypatch.setattr("eval.evaluate.load_hf_model_and_tokenizer", fake_loader)
+    monkeypatch.setenv("INFERENCE_MODE", "qlora")
+    monkeypatch.setenv("ADAPTER_DIR", "yassinelaabidi0/qwen2.5-3b-nl2sql-qlora")
+
+    predictor = create_predictor()
+    assert isinstance(predictor, QLoRAPredictor)
+    assert captured_adapters[0] == "yassinelaabidi0/qwen2.5-3b-nl2sql-qlora"
+
+    local_dir = tmp_path / "local_adapter"
+    local_dir.mkdir()
+    create_predictor(mode="qlora", adapter_dir=local_dir)
+    assert captured_adapters[1] == local_dir
+
+    with pytest.raises(FileNotFoundError):
+        create_predictor(mode="qlora", adapter_dir=tmp_path / "missing_dir")
+
+    with pytest.raises(FileNotFoundError):
+        create_predictor(mode="qlora", adapter_dir="outputs/nonexistent_local_adapter")

@@ -33,6 +33,13 @@ flowchart TD
 
 ## Quickstart
 
+### Running Without Local Model Weights
+
+If you just cloned the repository without pre-trained weights in `outputs/`, choose either path:
+
+- **Option A — No GPU / Architecture Demo (`mock` mode):** Copy `.env.example` to `.env` (keep `INFERENCE_MODE=mock`) and run `docker compose up -d --build` to test the React Workbench, live PostgreSQL FK schema linking, `sqlglot` AST guardrails, and audit logging with zero GPU or model download.
+- **Option B — Full Fine-Tuned QLoRA Inference (4 GB+ VRAM):** Set `INFERENCE_MODE=qlora` and `ADAPTER_DIR=yassinelaabidi0/qwen2.5-3b-nl2sql-qlora`. `transformers` and `peft` will automatically download `Qwen/Qwen2.5-3B-Instruct` and the LoRA adapter from Hugging Face Hub on first startup (or you can retrain locally from scratch with `python -m training.train_qlora`).
+
 ### 1. Environment & Offline Dataset Smoketest
 ```bash
 python -m venv .venv
@@ -75,9 +82,10 @@ Nginx serves the built React workbench on `http://localhost:3000` and proxies `/
 
 **Option B — Local GPU Inference + Vite Dev Server (`http://localhost:5173`):**
 ```bash
-# Terminal 1: Start Postgres only, then run Uvicorn against the local QLoRA adapter
+# Terminal 1: Start Postgres only, then run Uvicorn against the Hub or local QLoRA adapter
 docker compose up -d postgres
 INFERENCE_MODE=qlora \
+ADAPTER_DIR=yassinelaabidi0/qwen2.5-3b-nl2sql-qlora \
 READONLY_DATABASE_URL=postgresql://nl2sql_ro:nl2sql_ro@localhost:5432/nl2sql \
 LOG_DATABASE_URL=postgresql://nl2sql_logger:nl2sql_logger@localhost:5432/nl2sql \
 MAX_SQL_RETRIES=2 \

@@ -10,6 +10,8 @@ from typing import Any, Protocol
 import yaml
 
 _TABLE_RE = re.compile(r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([\"`\[]?\w+[\"`\]]?)", re.IGNORECASE)
+_HF_REPO_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")
+_LOCAL_ONLY_PREFIXES = ("outputs/", "checkpoints/", "models/", "./", "../")
 
 REPAIR_SYSTEM_PROMPT = (
     "You are a PostgreSQL SQL expert fixing a failed SQL query. Verify table alias declaration order "
@@ -68,18 +70,43 @@ class MockPredictor:
         return f"SELECT * FROM {table}"
 
 
+def _is_hf_repo_id(value: str) -> bool:
+    return (
+        bool(_HF_REPO_ID_RE.match(value))
+        and ".." not in value
+        and not value.startswith(_LOCAL_ONLY_PREFIXES)
+    )
+
+
+def _resolve_adapter_location(raw_adapter: str | Path) -> str | Path:
+    if isinstance(raw_adapter, Path):
+        if raw_adapter.is_dir():
+            return raw_adapter
+        posix_str = raw_adapter.as_posix()
+        if _is_hf_repo_id(posix_str):
+            return posix_str
+        raise FileNotFoundError(f"QLoRA adapter directory not found: {raw_adapter}")
+
+    candidate = raw_adapter.strip()
+    local_path = Path(candidate)
+    if local_path.is_dir():
+        return local_path
+    if _is_hf_repo_id(candidate):
+        return candidate
+    raise FileNotFoundError(f"QLoRA adapter directory or Hugging Face repo ID not found: {candidate}")
+
+
 class QLoRAPredictor:
     """Loads Qwen2.5-3B-Instruct + saved QLoRA adapter for deterministic SQL generation."""
 
     mode = "qlora"
 
-    def __init__(self, config_path: Path, adapter_dir: Path | None = None) -> None:
+    def __init__(self, config_path: Path, adapter_dir: str | Path | None = None) -> None:
         from eval.evaluate import load_hf_model_and_tokenizer
 
         cfg: dict[str, Any] = dict(yaml.safe_load(config_path.read_text(encoding="utf-8")))
-        eff_adapter = adapter_dir or Path(cfg["training"]["output_dir"])
-        if not eff_adapter.is_dir():
-            raise FileNotFoundError(f"QLoRA adapter directory not found: {eff_adapter}")
+        raw_ref: str | Path = adapter_dir if adapter_dir is not None else str(cfg["training"]["output_dir"])
+        eff_adapter = _resolve_adapter_location(raw_ref)
         self._model, self._tokenizer = load_hf_model_and_tokenizer(cfg, eff_adapter)
 
     def _infer_cleaned_sql(self, system_prompt: str, user_content: str) -> str:
@@ -116,7 +143,7 @@ class QLoRAPredictor:
 def create_predictor(
     mode: str | None = None,
     config_path: Path | None = None,
-    adapter_dir: Path | None = None,
+    adapter_dir: str | Path | None = None,
 ) -> PredictorProtocol:
     """Instantiate predictor according to INFERENCE_MODE (`mock` or `qlora`)."""
     resolved_mode = (mode or os.getenv("INFERENCE_MODE", "mock")).strip().lower()
@@ -125,6 +152,7 @@ def create_predictor(
     if resolved_mode == "qlora":
         cfg_path = config_path or Path(os.getenv("CONFIG_PATH", "training/config.yaml"))
         raw_adapter = os.getenv("ADAPTER_DIR")
-        eff_adapter = adapter_dir or (Path(raw_adapter) if raw_adapter else None)
+        cleaned_env = raw_adapter.strip() if raw_adapter else ""
+        eff_adapter: str | Path | None = adapter_dir if adapter_dir is not None else (cleaned_env or None)
         return QLoRAPredictor(cfg_path, eff_adapter)
     raise ValueError(f"Unsupported INFERENCE_MODE={resolved_mode!r}; expected 'mock' or 'qlora'.")

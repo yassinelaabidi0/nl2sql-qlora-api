@@ -79,7 +79,7 @@ def mock_generate_sql(mode: str, row: Mapping[str, Any], idx: int) -> tuple[str,
     return pred, (time.perf_counter() - t0) * 1000.0
 
 
-def load_hf_model_and_tokenizer(cfg: Mapping[str, Any], adapter_dir: Path | None = None) -> tuple[Any, Any]:
+def load_hf_model_and_tokenizer(cfg: Mapping[str, Any], adapter_dir: Path | str | None = None) -> tuple[Any, Any]:
     """Load base Qwen2.5 model (4-bit NF4 on CUDA) and optional LoRA adapter."""
     import torch
     import transformers
