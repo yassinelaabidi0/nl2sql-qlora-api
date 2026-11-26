@@ -261,7 +261,7 @@ export function ChatWorkspace({
                     <AlertTriangle className="h-4 w-4" />
                   )}
                 </div>
-                <div className="space-y-1">
+                <div className="min-w-0 flex-1 space-y-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <h3 className="text-sm font-semibold">
                       {isSecurityRejection ? "Blocked by SQL Security Guard" : "Query Execution Error"}
@@ -274,10 +274,18 @@ export function ChatWorkspace({
                     <p className="text-xs opacity-80">Prompt: "{lastQuestion}"</p>
                   )}
                   <p className="text-xs leading-relaxed font-medium">{error.reason}</p>
-                  {error.sql && (
-                    <pre className="mt-2 overflow-x-auto rounded-lg bg-black/10 p-2.5 font-mono text-xs dark:bg-black/30">
-                      <code>{error.sql}</code>
-                    </pre>
+                  {error.generatedSql && (
+                    <details
+                      open
+                      className="mt-2 overflow-hidden rounded-lg border border-black/10 bg-black/5 dark:border-white/10 dark:bg-black/25"
+                    >
+                      <summary className="cursor-pointer select-none px-2.5 py-1.5 font-mono text-[11px] font-medium opacity-85 hover:opacity-100">
+                        Failed SQL attempted
+                      </summary>
+                      <pre className="max-h-44 overflow-auto border-t border-black/10 p-2.5 font-mono text-xs dark:border-white/10">
+                        <code>{error.generatedSql}</code>
+                      </pre>
+                    </details>
                   )}
                 </div>
               </div>
@@ -305,7 +313,13 @@ export function ChatWorkspace({
               </div>
             </div>
 
-            <SqlCard sql={result.sql} latencyMs={result.latency_ms} rowCount={result.row_count} />
+            <SqlCard
+              sql={result.sql}
+              latencyMs={result.latency_ms}
+              rowCount={result.row_count}
+              wasRepaired={result.was_repaired}
+              repairAttempts={result.repair_attempts}
+            />
             <ResultTable columns={result.columns} rows={result.rows} />
           </section>
         )}

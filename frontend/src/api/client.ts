@@ -1,50 +1,24 @@
-export interface HealthResponse {
-  status: string;
-  inference_mode: string;
-  db_connected: boolean;
-}
+import type {
+  HealthResponse,
+  HistoryResponse,
+  QueryResponse,
+  SchemaResponse,
+} from "../types/api";
 
-export interface ColumnInfo {
-  name: string;
-  data_type: string;
-  is_nullable: boolean;
-}
-
-export interface TableSchema {
-  name: string;
-  columns: ColumnInfo[];
-}
-
-export interface SchemaResponse {
-  tables: TableSchema[];
-}
-
-export interface HistoryEntry {
-  id: number;
-  created_at: string;
-  question: string;
-  generated_sql: string;
-  status: string;
-  latency_ms: number;
-  error_message: string | null;
-}
-
-export interface HistoryResponse {
-  items: HistoryEntry[];
-}
-
-export interface QueryResponse {
-  question: string;
-  sql: string;
-  columns: string[];
-  rows: unknown[][];
-  row_count: number;
-  latency_ms: number;
-}
+export type {
+  ColumnInfo,
+  HealthResponse,
+  HistoryEntry,
+  HistoryResponse,
+  QueryResponse,
+  SchemaResponse,
+  TableSchema,
+} from "../types/api";
 
 interface RawErrorDetail {
   error?: unknown;
   reason?: unknown;
+  generated_sql?: unknown;
   sql?: unknown;
 }
 
@@ -52,15 +26,15 @@ export class ApiError extends Error {
   status: number;
   errorCode: string;
   reason: string;
-  sql?: string;
+  generatedSql?: string;
 
-  constructor(status: number, errorCode: string, reason: string, sql?: string) {
+  constructor(status: number, errorCode: string, reason: string, generatedSql?: string) {
     super(reason);
     this.name = "ApiError";
     this.status = status;
     this.errorCode = errorCode;
     this.reason = reason;
-    this.sql = sql;
+    this.generatedSql = generatedSql;
   }
 }
 
@@ -72,7 +46,7 @@ const API_BASE = ((import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "
 async function parseErrorResponse(res: Response): Promise<ApiError> {
   let errorCode = res.status === 403 ? "forbidden" : "request_failed";
   let reason = res.statusText || `HTTP ${res.status}`;
-  let sql: string | undefined;
+  let generatedSql: string | undefined;
 
   try {
     const payload = (await res.json()) as { detail?: unknown; error?: unknown; reason?: unknown };
@@ -98,15 +72,17 @@ async function parseErrorResponse(res: Response): Promise<ApiError> {
       if (typeof obj.reason === "string" && obj.reason.trim()) {
         reason = obj.reason;
       }
-      if (typeof obj.sql === "string" && obj.sql.trim()) {
-        sql = obj.sql;
+      if (typeof obj.generated_sql === "string" && obj.generated_sql.trim()) {
+        generatedSql = obj.generated_sql;
+      } else if (typeof obj.sql === "string" && obj.sql.trim()) {
+        generatedSql = obj.sql;
       }
     }
   } catch {
-    // Keep HTTP status fallback when body is not JSON.
+    // Non-JSON error body falls back to HTTP status text.
   }
 
-  return new ApiError(res.status, errorCode, reason, sql);
+  return new ApiError(res.status, errorCode, reason, generatedSql);
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

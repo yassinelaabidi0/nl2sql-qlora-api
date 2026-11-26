@@ -1,10 +1,12 @@
-import { Check, Code2, Copy, ShieldCheck, Timer } from "lucide-react";
+import { Check, Code2, Copy, ShieldCheck, Timer, Wrench } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
 interface SqlCardProps {
   sql: string;
   latencyMs: number;
   rowCount: number;
+  wasRepaired?: boolean;
+  repairAttempts?: number;
 }
 
 const SQL_KEYWORDS = new Set([
@@ -112,7 +114,13 @@ function highlightSql(sql: string): ReactNode[] {
   });
 }
 
-export function SqlCard({ sql, latencyMs, rowCount }: SqlCardProps) {
+export function SqlCard({
+  sql,
+  latencyMs,
+  rowCount,
+  wasRepaired = false,
+  repairAttempts = 0,
+}: SqlCardProps) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = async () => {
@@ -139,7 +147,20 @@ export function SqlCard({ sql, latencyMs, rowCount }: SqlCardProps) {
           </span>
         </div>
 
-        <div className="flex items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
+        <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
+          {wasRepaired && (
+            <span
+              title={
+                repairAttempts > 0
+                  ? `Auto-repaired after ${repairAttempts} PostgreSQL retry`
+                  : "Auto-repaired after PostgreSQL error"
+              }
+              className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-300"
+            >
+              <Wrench className="h-3 w-3" />
+              Auto-repaired
+            </span>
+          )}
           <span className="rounded-md bg-zinc-200/70 px-2 py-0.5 font-mono text-[11px] text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
             {rowCount} {rowCount === 1 ? "row" : "rows"}
           </span>
