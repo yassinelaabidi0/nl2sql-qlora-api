@@ -8,12 +8,13 @@ import {
   Terminal,
   X,
 } from "lucide-react";
-import { useState, type FormEvent, type KeyboardEvent } from "react";
-import type { ApiError, QueryResponse } from "../api/client";
+import { useMemo, useState, type FormEvent, type KeyboardEvent } from "react";
+import type { ApiError, QueryResponse, TableSchema } from "../api/client";
 import { ResultTable } from "./ResultTable";
 import { SqlCard } from "./SqlCard";
 
 interface ChatWorkspaceProps {
+  tables: TableSchema[];
   question: string;
   onQuestionChange: (value: string) => void;
   schemaDdl: string;
@@ -33,7 +34,7 @@ interface ExamplePrompt {
   isSecurityTest?: boolean;
 }
 
-const EXAMPLE_PROMPTS: ExamplePrompt[] = [
+const FALLBACK_PROMPTS: ExamplePrompt[] = [
   {
     title: "Headcount by department",
     question: "How many employees work in each department?",
@@ -57,7 +58,87 @@ const EXAMPLE_PROMPTS: ExamplePrompt[] = [
   },
 ];
 
+function getColumnType(col: TableSchema["columns"][number]): string {
+  const record = col as unknown as Record<string, unknown>;
+  return String(record.data_type ?? record.type ?? "").toLowerCase();
+}
+
+function buildPromptsForSchema(tables: TableSchema[]): ExamplePrompt[] {
+  const userTables = tables.filter((t) => t.name !== "query_logs");
+  if (userTables.length === 0) {
+    return FALLBACK_PROMPTS;
+  }
+
+  const isNumeric = (col: TableSchema["columns"][number]) => {
+    const dtype = getColumnType(col);
+    return (
+      col.name !== "id" &&
+      !col.name.endsWith("_id") &&
+      (dtype.includes("num") ||
+        dtype.includes("int") ||
+        dtype.includes("dec") ||
+        dtype.includes("float") ||
+        dtype.includes("double"))
+    );
+  };
+
+  const isDimension = (col: TableSchema["columns"][number]) => {
+    const dtype = getColumnType(col);
+    return col.name !== "id" && (dtype.includes("text") || dtype.includes("char") || dtype.includes("date"));
+  };
+
+  // 1. Aggregation card
+  const aggTable =
+    userTables.find((t) => t.columns.some(isNumeric) && t.columns.some(isDimension)) ?? userTables[0];
+  const metric = aggTable.columns.find(isNumeric);
+  const dim = aggTable.columns.find(isDimension);
+  const aggQuestion =
+    metric && dim
+      ? `What is the total ${metric.name.replace(/_/g, " ")} by ${dim.name.replace(/_/g, " ")} in ${aggTable.name}?`
+      : `How many rows are in ${aggTable.name}?`;
+
+  // 2. Relational join card (detects *_id foreign keys across tables)
+  const tableNames = new Set(userTables.map((t) => t.name));
+  let joinQuestion = `List all records from ${userTables[Math.min(1, userTables.length - 1)].name}`;
+  for (const tbl of userTables) {
+    const fkCol = tbl.columns.find((c) => c.name.endsWith("_id"));
+    if (fkCol) {
+      const stem = fkCol.name.slice(0, -3);
+      const target =
+        userTables.find((t) => t.name === `${stem}s` || t.name === `${stem}es` || t.name === stem) ??
+        (stem.endsWith("y") && tableNames.has(`${stem.slice(0, -1)}ies`)
+          ? userTables.find((t) => t.name === `${stem.slice(0, -1)}ies`)
+          : undefined);
+      if (target && target.name !== tbl.name) {
+        joinQuestion = `Show ${tbl.name} with their ${target.name} details`;
+        break;
+      }
+    }
+  }
+
+  // 3. Ranking card
+  const rankTable = userTables.find((t) => t.columns.some(isNumeric)) ?? userTables[0];
+  const rankCol = rankTable.columns.find(isNumeric) ?? rankTable.columns[0];
+  const rankQuestion = `List the top 5 ${rankTable.name} ordered by ${rankCol.name.replace(/_/g, " ")}`;
+
+  // 4. Guardrail test card
+  const guardTable = userTables[0].name;
+
+  return [
+    { title: "Aggregation", question: aggQuestion, tag: "Aggregation" },
+    { title: "Relational Join", question: joinQuestion, tag: "Relational Join" },
+    { title: "Ranking", question: rankQuestion, tag: "Ranking" },
+    {
+      title: `Drop ${guardTable}`,
+      question: `Drop the ${guardTable} table`,
+      tag: "Guardrail Test",
+      isSecurityTest: true,
+    },
+  ];
+}
+
 export function ChatWorkspace({
+  tables,
   question,
   onQuestionChange,
   schemaDdl,
@@ -70,6 +151,7 @@ export function ChatWorkspace({
   onClearError,
 }: ChatWorkspaceProps) {
   const [showCustomDdl, setShowCustomDdl] = useState(false);
+  const examplePrompts = useMemo(() => buildPromptsForSchema(tables), [tables]);
 
   const handleFormSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -131,7 +213,7 @@ export function ChatWorkspace({
               value={question}
               onChange={(e) => onQuestionChange(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Ask a question about departments, employees, or sales... (Enter to run, Shift+Enter for newline)"
+              placeholder="Ask a question about your PostgreSQL tables... (Enter to run, Shift+Enter for newline)"
               className="w-full resize-none bg-transparent px-4 pt-3.5 pb-2 text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none dark:text-zinc-100 dark:placeholder:text-zinc-500"
             />
 
@@ -183,25 +265,23 @@ export function ChatWorkspace({
         </section>
 
         <section className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
-          {EXAMPLE_PROMPTS.map((item) => (
+          {examplePrompts.map((item) => (
             <button
               key={item.title}
               type="button"
               disabled={isLoading}
               onClick={() => handleExampleClick(item.question)}
-              className={`group flex flex-col justify-between rounded-xl border p-3 text-left transition disabled:opacity-50 ${
-                item.isSecurityTest
-                  ? "border-rose-500/25 bg-rose-500/5 hover:border-rose-500/50 hover:bg-rose-500/10"
-                  : "border-zinc-200 bg-white hover:border-emerald-500/50 hover:bg-emerald-500/5 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-emerald-500/40"
-              }`}
+              className={`group flex flex-col justify-between rounded-xl border p-3 text-left transition disabled:opacity-50 ${item.isSecurityTest
+                ? "border-rose-500/25 bg-rose-500/5 hover:border-rose-500/50 hover:bg-rose-500/10"
+                : "border-zinc-200 bg-white hover:border-emerald-500/50 hover:bg-emerald-500/5 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-emerald-500/40"
+                }`}
             >
               <div className="flex items-center justify-between gap-2">
                 <span
-                  className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
-                    item.isSecurityTest
-                      ? "bg-rose-500/15 text-rose-700 dark:text-rose-300"
-                      : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
-                  }`}
+                  className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${item.isSecurityTest
+                    ? "bg-rose-500/15 text-rose-700 dark:text-rose-300"
+                    : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
+                    }`}
                 >
                   {item.isSecurityTest && <ShieldAlert className="h-3 w-3" />}
                   {item.tag}
@@ -240,20 +320,18 @@ export function ChatWorkspace({
         {!isLoading && error && (
           <section
             role="alert"
-            className={`rounded-xl border p-4 shadow-xs ${
-              isSecurityRejection
-                ? "border-rose-500/35 bg-rose-500/10 text-rose-900 dark:border-rose-500/40 dark:bg-rose-950/40 dark:text-rose-100"
-                : "border-amber-500/35 bg-amber-500/10 text-amber-950 dark:border-amber-500/40 dark:bg-amber-950/30 dark:text-amber-100"
-            }`}
+            className={`rounded-xl border p-4 shadow-xs ${isSecurityRejection
+              ? "border-rose-500/35 bg-rose-500/10 text-rose-900 dark:border-rose-500/40 dark:bg-rose-950/40 dark:text-rose-100"
+              : "border-amber-500/35 bg-amber-500/10 text-amber-950 dark:border-amber-500/40 dark:bg-amber-950/30 dark:text-amber-100"
+              }`}
           >
             <div className="flex items-start justify-between gap-3">
               <div className="flex items-start gap-3">
                 <div
-                  className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${
-                    isSecurityRejection
-                      ? "bg-rose-500/20 text-rose-600 dark:text-rose-300"
-                      : "bg-amber-500/20 text-amber-600 dark:text-amber-300"
-                  }`}
+                  className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${isSecurityRejection
+                    ? "bg-rose-500/20 text-rose-600 dark:text-rose-300"
+                    : "bg-amber-500/20 text-amber-600 dark:text-amber-300"
+                    }`}
                 >
                   {isSecurityRejection ? (
                     <ShieldAlert className="h-4 w-4" />

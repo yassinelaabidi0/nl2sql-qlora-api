@@ -178,6 +178,7 @@ export default function App() {
         />
 
         <ChatWorkspace
+          tables={tables}
           question={question}
           onQuestionChange={setQuestion}
           schemaDdl={schemaDdl}
